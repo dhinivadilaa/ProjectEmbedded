@@ -1,0 +1,115 @@
+#include <DHT.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+#define DHTPIN       3
+#define DHTTYPE      DHT11
+#define PIR_PIN      5 
+#define MQ135_PIN    A0
+#define RELAY_PIN    4 
+#define BUZZER_PIN   6    // Buzzer aktif di pin 6
+
+const float TEMP_THRESHOLD = 30.0;      // Suhu di atas ini dianggap panas
+const int GAS_THRESHOLD = 350;         // MQ135: normal < 300, >350 = polusi
+const unsigned long ORANG_TIMEOUT = 10000;  // 10 detik dianggap masih ada orang
+DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal_I2C lcd(0x27, 16, 2);   
+
+unsigned long lastUpdate = 0;
+unsigned long lastGerakTerdeteksi = 0;
+const unsigned long UPDATE_INTERVAL = 3000;
+float suhuTerakhir = 25.0;
+
+bool adaOrang = false;
+
+// === SETUP ===
+void setup() {
+  Wire.begin();
+  Serial.begin(9600);
+  dht.begin();
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print(" Smart Fan Ready ");
+  lcd.setCursor(0, 1);
+  lcd.print(" Monitoring...    ");
+  delay(2000);
+  lcd.clear();
+
+  pinMode(PIR_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH);
+  digitalWrite(BUZZER_PIN, LOW); // Matikan buzzer awal
+
+  Serial.println("⏳ Memanaskan sensor gas MQ135...");
+  delay(10000);
+  Serial.println("✅ MQ135 siap digunakan.");
+}
+
+float bacaSuhu() {
+  float suhu = dht.readTemperature();
+  if (!isnan(suhu)) {
+    suhuTerakhir = suhu;
+  } else {
+    Serial.println("⚠  Gagal membaca suhu, gunakan nilai terakhir.");
+  }
+  return suhuTerakhir;
+}
+
+int bacaGas() {
+  int nilaiGas = analogRead(MQ135_PIN);
+  nilaiGas = constrain(nilaiGas, 0, 1023);
+  if (nilaiGas < 50) {
+    Serial.println("⚠  Nilai gas sangat rendah (kemungkinan sensor belum siap atau wiring salah)");
+  }
+  return nilaiGas;
+}
+
+void tampilkanKeLCD(float suhu, int gas, bool orang, bool kipasNyala) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("T:"); lcd.print(suhu, 1); lcd.print((char)223); lcd.print("C ");
+  lcd.print("G:"); lcd.print(gas);
+
+  lcd.setCursor(0, 1);
+  lcd.print(kipasNyala ? "FAN:ON  " : "FAN:OFF ");
+  lcd.print(orang ? "ORG:YES" : "ORG:NO ");
+}
+void tampilkanKeSerial(float suhu, int gas, bool orang, bool kipasNyala) {
+  Serial.println("==== DATA SENSOR ====");
+  Serial.print(" Suhu     : "); Serial.print(suhu); Serial.println(" °C");
+  Serial.print(" Gas      : "); Serial.println(gas);
+  Serial.print(" Gerakan  : "); Serial.println(orang ? "ADA" : "TIDAK");
+  Serial.print(" FAN      : "); Serial.println(kipasNyala ? "NYALA" : "MATI");
+  Serial.print("Kondisi Suhu: "); Serial.println(suhu > TEMP_THRESHOLD ? "TINGGI" : "NORMAL");
+  Serial.print("Kondisi Gas : "); Serial.println(gas > GAS_THRESHOLD ? "TINGGI" : "NORMAL");
+  Serial.println();
+}
+void loop() {
+  unsigned long sekarang = millis();
+
+  if (digitalRead(PIR_PIN) == HIGH) {
+    lastGerakTerdeteksi = sekarang;
+  }
+  adaOrang = (sekarang - lastGerakTerdeteksi) <= ORANG_TIMEOUT;
+
+  if (sekarang - lastUpdate >= UPDATE_INTERVAL) {
+    float suhu = bacaSuhu();
+    int gas = bacaGas();
+
+    bool kondisiSuhu = suhu > TEMP_THRESHOLD;
+    bool kondisiGas = gas > GAS_THRESHOLD;
+    bool kipasNyala = kondisiGas || (kondisiSuhu && adaOrang);
+    digitalWrite(RELAY_PIN, kipasNyala ? LOW : HIGH);
+    digitalWrite(BUZZER_PIN, kondisiGas ? HIGH : LOW);
+
+    tampilkanKeLCD(suhu, gas, adaOrang, kipasNyala);
+    tampilkanKeSerial(suhu, gas, adaOrang, kipasNyala);
+
+    lastUpdate = sekarang;
+  }
+
+  delay(50);
+}
